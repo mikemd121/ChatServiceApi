@@ -55,7 +55,6 @@ namespace ChatServiceApi
                 return "OK";
             }
         }
-
         private async Task CheckPollStatus()
         {
             while (true)
@@ -89,69 +88,85 @@ namespace ChatServiceApi
                 lock (_sync)
                 {
                     var agents = _agentProvider.GetCurrentAgents();
-
                     var mainAgents = agents.Where(a => !a.IsOverflow).ToList();
                     int mainQueueLimit = CalculateQueueLimit(mainAgents);
-
 
                     while (_queue.Count > 0)
                     {
                         var session = _queue.Peek();
-                        //if (session.IsInactive)
-                        //{
-                        //    _queue.Dequeue();
-                        //    continue;
-                        //}
 
-                        List<IGrouping<AgentSeniority, SupportAgent>> prioritizedAgents;
-                        prioritizedAgents = agents
-                         .Where(a => a.GetAvailableSlots() > 0 && !a.IsOverflow)
-                         .GroupBy(a => a.Seniority)
-                         .OrderBy(g => g.Key).ToList();
+                        var prioritizedAgents = GetPrioritizedAgents(agents, mainQueueLimit);
 
+                        // Freeze the queue count only once
                         if (_queue.Count == mainQueueLimit)
-                            _frozenQueueCount = _queue.Count; // store only once
+                            _frozenQueueCount = _queue.Count;
 
-                        if (prioritizedAgents.Count() == 0 && _frozenQueueCount == mainQueueLimit &&
-                            agents.Where(x => x.IsOverflow).Any())
+                        if (IsOverflowCondition(prioritizedAgents, agents, mainQueueLimit))
                         {
-                            prioritizedAgents = agents
-                               .Where(a => a.GetAvailableSlots() > 0 && a.IsOverflow)
-                               .GroupBy(a => a.Seniority)
-                               .OrderBy(g => g.Key).ToList();
-
+                            prioritizedAgents = GetOverflowAgents(agents);
                         }
 
-                        bool isAssigned = false;
-                        foreach (var group in prioritizedAgents)
-                        {
-                            var members = group.ToList();
-                            if (!_rotation.ContainsKey(group.Key))
-                                _rotation[group.Key] = 0;
+                        if (!TryAssignSessionToAgent(session, prioritizedAgents))
+                            break;
 
-                            for (int i = 0; i < members.Count; i++)
-                            {
-                                int idx = (_rotation[group.Key] + i) % members.Count;
-                                var agent = members[idx];
-
-                                if (agent.GetAvailableSlots() > 0)
-                                {
-                                    agent.ActiveSessions.Add(session.Username);
-                                    session.AssignedAgentName = agent.Name;
-                                    _rotation[group.Key] = (idx + 1) % members.Count;
-                                    _queue.Dequeue();
-                                    isAssigned = true;
-                                    break;
-                                }
-                            }
-                            if (isAssigned) break;
-                        }
-
-                        if (!isAssigned) break;
+                        _queue.Dequeue(); // only after successful assignment
                     }
                 }
+
                 await Task.Delay(1000);
             }
+        }
+
+        private List<IGrouping<AgentSeniority, SupportAgent>> GetPrioritizedAgents(List<SupportAgent> agents, int mainQueueLimit)
+        {
+            return agents
+                .Where(a => a.GetAvailableSlots() > 0 && !a.IsOverflow)
+                .GroupBy(a => a.Seniority)
+                .OrderBy(g => g.Key)
+                .ToList();
+        }
+
+        private bool IsOverflowCondition(List<IGrouping<AgentSeniority, SupportAgent>> prioritizedAgents, List<SupportAgent> agents, int mainQueueLimit)
+        {
+            return prioritizedAgents.Count == 0 &&
+                   _frozenQueueCount == mainQueueLimit &&
+                   agents.Any(x => x.IsOverflow);
+        }
+
+        private List<IGrouping<AgentSeniority, SupportAgent>> GetOverflowAgents(List<SupportAgent> agents)
+        {
+            return agents
+                .Where(a => a.GetAvailableSlots() > 0 && a.IsOverflow)
+                .GroupBy(a => a.Seniority)
+                .OrderBy(g => g.Key)
+                .ToList();
+        }
+
+        private bool TryAssignSessionToAgent(ChatSession session, List<IGrouping<AgentSeniority, SupportAgent>> prioritizedAgents)
+        {
+            foreach (var group in prioritizedAgents)
+            {
+                var members = group.ToList();
+
+                if (!_rotation.ContainsKey(group.Key))
+                    _rotation[group.Key] = 0;
+
+                for (int i = 0; i < members.Count; i++)
+                {
+                    int idx = (_rotation[group.Key] + i) % members.Count;
+                    var agent = members[idx];
+
+                    if (agent.GetAvailableSlots() > 0)
+                    {
+                        agent.ActiveSessions.Add(session.Username);
+                        session.AssignedAgentName = agent.Name;
+                        _rotation[group.Key] = (idx + 1) % members.Count;
+                        return true;
+                    }
+                }
+            }
+
+            return false;
         }
 
         public int CalculateQueueLimit(List<SupportAgent> agents)
