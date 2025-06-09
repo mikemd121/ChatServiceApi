@@ -1,3 +1,5 @@
+-------ChatServiceApi-------
+
 This application is developed based on Clean Architecture, with several layers created to maintain code quality and avoid dependencies on the Core domain and Application layers.
 
 The system is built using .NET 8 with dependency injection, aligning with object-oriented programming (OOP) concepts and SOLID principles. Additionally, it follows RESTful architecture to ensure standardization.
